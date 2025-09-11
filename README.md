@@ -68,10 +68,28 @@ for episode in trange(5000):
     train_stats = agent.terminate_episode() # trains if batch is full
 ```
 
+## Stability Features
+
+LlamaGym includes optional stability features that can dramatically improve RL convergence:
+
+```python
+agent = BlackjackAgent(
+    model, tokenizer, device,
+    # Stability toggles (all optional, default False)
+    sft_warm_start=True,  # Offline→online bridge via replay buffer
+    use_target_kl=True    # Target-KL early stopping
+)
+```
+
+**SFT Warm-Start**: Maintains a small replay buffer of successful episodes and runs supervised fine-tuning steps on top-performing trajectories after each PPO update. Provides the "offline→online bridge" that stabilizes pure online RL.
+
+**Target-KL Controller**: Enables TRL's built-in KL divergence monitoring and early stopping to prevent catastrophic policy drift.
+
+**Robust Action Extraction**: Automatically tries JSON parsing first (e.g., `{"action": 0}`), then falls back to regex, reducing action parsing failures.
+
 Some reminders:
 - above code snippets are mildly simplified above but a fully working example is available in [`examples/blackjack.py`](https://github.com/KhoomeiK/LlamaGym/blob/main/examples/blackjack.py)
 - getting online RL to converge is notoriously difficult so you'll have to mess with hyperparameters to see improvement
-  - your model may also benefit from a supervised fine-tuning stage on sampled trajectories before running RL (we may add this feature in the future)
 - our implementation values simplicity so is not as compute efficient as e.g. [Lamorel](https://github.com/flowersteam/lamorel), but easier to start playing around with
 - LlamaGym is a weekend project and still a WIP, but we love contributions!
 

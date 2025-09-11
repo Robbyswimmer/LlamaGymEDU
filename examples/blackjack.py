@@ -1,4 +1,7 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""        # hide CUDA
+os.environ.pop("ACCELERATE_USE_MPS_DEVICE", None)  # avoid MPS auto-pick if you want pure CPU
+
 from tqdm import trange
 import wandb
 
@@ -14,7 +17,7 @@ from llamagym import Agent
 class BlackjackAgent(Agent):
     def get_system_prompt(self) -> str:
         return """You are an expert blackjack player. Every turn, you'll see your current sum, the dealer's showing card value, and whether you have a usable ace. Win by exceeding the dealer's hand but not exceeding 21.
-Decide whether to stay with your current sum by writing "Action: 0" or accept another card by writing "Action: 1". Accept a card unless very close to 21."""
+Respond in JSON format: {"action": 0} to stay with your current sum or {"action": 1} to accept another card. Accept a card unless very close to 21."""
 
     def format_observation(self, observation: gym.core.ObsType) -> str:
         return f"You: {observation[0]}. Dealer: {observation[1]}. You have {'an' if bool(observation[2]) else 'no'} ace."
@@ -36,17 +39,17 @@ Decide whether to stay with your current sum by writing "Action: 0" or accept an
 
 if __name__ == "__main__":
     hyperparams = {
-        "model_name": "meta-llama/Llama-2-7b-chat-hf",
+        "model_name": "microsoft/DialoGPT-medium",
         "env": "Blackjack-v1",
         "lora/r": 16,
         "lora/lora_alpha": 32,
         "lora/lora_dropout": 0.05,
         "lora/bias": "none",
         "lora/task_type": "CAUSAL_LM",
-        "load_in_8bit": True,
+        "load_in_8bit": False,
         "batch_size": 8,
         "seed": 42069,
-        "episodes": 5000,
+        "episodes": 50,
         "generate/max_new_tokens": 32,
         "generate/do_sample": True,
         "generate/top_p": 0.6,
@@ -54,7 +57,7 @@ if __name__ == "__main__":
         "generate/temperature": 0.9,
     }
     wandb_run = wandb.init(project=os.environ.get("WANDB_PROJECT"), config=hyperparams)
-    device = "cuda:0"
+    device = "cpu"
     HF_TOKEN = os.environ.get("HF_TOKEN")
 
     lora_config = LoraConfig(
@@ -69,6 +72,7 @@ if __name__ == "__main__":
         peft_config=lora_config,
         load_in_8bit=hyperparams["load_in_8bit"],
         token=HF_TOKEN,
+        device_map="cpu",
     ).to(device)
     tokenizer = AutoTokenizer.from_pretrained(hyperparams["model_name"], token=HF_TOKEN)
     tokenizer.add_special_tokens({"pad_token": "<pad>"})
@@ -87,6 +91,10 @@ if __name__ == "__main__":
             "batch_size": hyperparams["batch_size"],
             "mini_batch_size": hyperparams["batch_size"],
         },
+
+        # Enable stability features
+        sft_warm_start=True,   # Offline→online bridge
+        use_target_kl=True     # Prevent policy drift
     )
     env = gym.make(hyperparams["env"], natural=False, sab=False)
 
