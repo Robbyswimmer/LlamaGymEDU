@@ -1,0 +1,10 @@
+# Core dependencies shared across macOS, Windows, and Linux
+accelerate>=0.33,<0.34
+gymnasium>=0.29,<0.30
+peft>=0.7.1,<0.8
+scipy>=1.12,<1.14
+torch>=2.3,<2.4
+transformers>=4.43.3,<4.44
+trl>=0.9.6,<0.10
+tqdm>=4.66,<5
+wandb>=0.16,<0.18

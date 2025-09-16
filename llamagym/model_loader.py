@@ -6,6 +6,7 @@ device detection, error handling, and optimization.
 """
 
 import os
+import importlib.util
 import torch
 from typing import Tuple, Optional, Dict, Any
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
@@ -13,6 +14,11 @@ from trl import AutoModelForCausalLMWithValueHead
 from peft import LoraConfig
 
 from .models import model_registry, ModelConfig
+
+
+def _has_bitsandbytes() -> bool:
+    """Check if bitsandbytes is available."""
+    return importlib.util.find_spec("bitsandbytes") is not None
 
 
 def detect_device() -> str:
@@ -28,6 +34,9 @@ def detect_device() -> str:
 
 def should_use_quantization(model_name: str, device: str) -> Dict[str, Any]:
     """Suggest quantization settings based on model and hardware."""
+    if not _has_bitsandbytes():
+        return {}
+
     model_lower = model_name.lower()
     quantization_kwargs = {}
     
@@ -184,7 +193,12 @@ def load_model_and_tokenizer(
             model_kwargs.update(quant_kwargs)
             if quant_kwargs:
                 print(f"Auto-enabled quantization: {quant_kwargs}")
-        
+
+        if any(model_kwargs.get(flag) for flag in ("load_in_8bit", "load_in_4bit")) and not _has_bitsandbytes():
+            print("⚠️  Requested quantization but bitsandbytes is unavailable. Continuing without quantization.")
+            model_kwargs.pop("load_in_8bit", None)
+            model_kwargs.pop("load_in_4bit", None)
+
         # Handle device mapping
         if device == "cpu":
             model_kwargs["device_map"] = "cpu"

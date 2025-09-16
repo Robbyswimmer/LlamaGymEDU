@@ -1,0 +1,2 @@
+# Optional TextWorld support for interactive fiction environments
+textworld>=1.6,<1.7

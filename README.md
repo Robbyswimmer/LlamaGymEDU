@@ -23,6 +23,57 @@ OpenAI created [Gym](https://github.com/Farama-Foundation/Gymnasium) to standard
 
 LlamaGym seeks to simplify fine-tuning LLM agents with RL. Right now, it's a single `Agent` abstract class that handles all the issues mentioned above, letting you quickly iterate and experiment with agent prompting & hyperparameters across any Gym environment.
 
+## 🚀 Quickstart (macOS / Windows / Linux)
+
+1. **Clone the project and bootstrap the environment**
+
+   ```bash
+   git clone https://github.com/KhoomeiK/LlamaGymEDU.git
+   cd LlamaGymEDU
+   python scripts/bootstrap.py
+   ```
+
+   The bootstrapper creates a `.venv` virtual environment, installs the pinned dependencies from `requirements/base.txt`, and automatically adds Linux-only extras like `bitsandbytes`. Pass `--extras textworld` to add the optional TextWorld stack or `--no-platform-extras` if you want a minimal install. Run `python scripts/bootstrap.py --help` to see every option.
+
+2. **Activate the virtual environment**
+
+   ```bash
+   source .venv/bin/activate          # macOS / Linux
+   .\.venv\Scripts\activate           # Windows PowerShell
+   ```
+
+3. **Disable external logging unless you need it**
+
+   W&B logging defaults to `mode="disabled"` unless `WANDB_PROJECT` is set. You can override the behaviour by exporting `WANDB_MODE` (e.g. `offline` or `online`). Hugging Face models that require authentication can use the standard `HF_TOKEN` environment variable.
+
+### Run a quick sanity check
+
+Laptop-friendly defaults ship with the repository so that even CPU-only machines can experiment quickly.
+
+```bash
+python examples/blackjack.py --episodes 5
+```
+
+The script loads `TinyLlama/TinyLlama-1.1B-Chat-v1.0` by default (≈1.1B parameters) and runs fully on CPU or Apple M-series hardware. To try TextWorld, install the optional dependencies and run:
+
+```bash
+python scripts/bootstrap.py --extras textworld
+python examples/text-world.py --episodes 5
+```
+
+Both examples accept `--model`, `--device`, and other quality-of-life flags so students can switch between CPU, CUDA, or MPS and try other compact models without editing code.
+
+### Laptop-sized model suggestions
+
+| Model | Parameters | Notes |
+| --- | --- | --- |
+| `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | 1.1B | Fits in <4 GB of RAM; great for CPU-only runs |
+| `microsoft/phi-2` or `microsoft/phi-3-mini-4k-instruct` | 2.7B–3.8B | Requires ~8 GB RAM; strong instruction following |
+| `HuggingFaceTB/SmolLM-1.7B-Instruct` | 1.7B | Community model tuned for fast experiments |
+| `Qwen/Qwen2-1.5B-Instruct` | 1.5B | Multilingual baseline with solid reasoning |
+
+All of these models have dedicated entries in `llamagym.model_registry`, so `load_model_and_tokenizer` automatically applies appropriate generation and LoRA defaults.
+
 ## Usage
 Fine-tuning an LLM-based agent to play in a Gym-style environment with RL has never been easier! Once you install LlamaGym...
 ```
