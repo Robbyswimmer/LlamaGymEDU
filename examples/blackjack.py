@@ -165,13 +165,23 @@ def main() -> None:
             done = terminated or truncated
             step += 1
 
+        episode_messages = list(agent.current_episode_messages)
+        episode_return = sum(agent.current_episode_rewards)
+        episode_length = step
+
+        train_stats = agent.terminate_episode()
         episode_stats = {
             "episode": episode,
-            "total_return": sum(agent.current_episode_rewards),
-            "message_ct": len(agent.current_episode_messages),
-            "episode_messages": agent.current_episode_messages,
+            "total_return": episode_return,
+            "rl/episode_return": episode_return,
+            "rl/episode_length": episode_length,
+            "message_ct": len(episode_messages),
+            "episode_messages": episode_messages,
         }
-        train_stats = agent.terminate_episode()
+
+        if getattr(agent, "replay_buffer", None) is not None:
+            episode_stats.update(agent.replay_buffer.summary())
+
         episode_stats.update(train_stats)
 
         def convert_for_wandb(value):

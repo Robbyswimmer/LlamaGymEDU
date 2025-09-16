@@ -92,6 +92,7 @@ class SFTTrainer:
 
         total_loss = 0.0
         num_steps = 0
+        skipped_steps = 0
         
         # Calculate total steps for progress bar
         total_sft_steps = self.sft_steps * len(sft_data)
@@ -111,6 +112,7 @@ class SFTTrainer:
                             avg_loss_display = total_loss / num_steps if num_steps > 0 else 0.0
                             pbar.set_postfix(loss=f"{loss:.4f}", avg_loss=f"{avg_loss_display:.4f}")
                         else:
+                            skipped_steps += 1
                             pbar.set_postfix(loss="skip", avg_loss=f"{total_loss/max(1,num_steps):.4f}")
                         pbar.update(1)
         finally:
@@ -120,10 +122,12 @@ class SFTTrainer:
         avg_loss = total_loss / max(1, num_steps)
         print(f"✅ SFT warm-start completed! Avg loss: {avg_loss:.4f}")
         return {
-            "sft_loss": avg_loss,
-            "sft_steps": num_steps,
-            "sft_episodes_used": len(top_episodes),
-            "sft_pairs_used": len(sft_data)
+            "sft/loss": float(avg_loss),
+            "sft/steps": float(num_steps),
+            "sft/skipped_steps": float(skipped_steps),
+            "sft/episodes_used": float(len(top_episodes)),
+            "sft/pairs_used": float(len(sft_data)),
+            "sft/optimizer/lr": float(lrs[0] if lrs else self.sft_lr),
         }
     
     def _sft_step(self, obs_text: str, response_text: str, system_prompt: str, 
