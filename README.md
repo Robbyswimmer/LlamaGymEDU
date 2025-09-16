@@ -54,7 +54,7 @@ Laptop-friendly defaults ship with the repository so that even CPU-only machines
 python examples/blackjack.py --episodes 5
 ```
 
-The script loads `TinyLlama/TinyLlama-1.1B-Chat-v1.0` by default (≈1.1B parameters) and runs fully on CPU or Apple M-series hardware. To try TextWorld, install the optional dependencies and run:
+The script loads `TinyLlama/TinyLlama-1.1B-Chat-v1.0` by default (≈1.1B parameters) and runs fully on CPU or Apple M-series hardware. It includes SFT warm-start using demo data from `sft_data/demo_blackjack.jsonl`. To try TextWorld, install the optional dependencies and run:
 
 ```bash
 python scripts/bootstrap.py --extras textworld
@@ -132,7 +132,7 @@ agent = BlackjackAgent(
 )
 ```
 
-**SFT Warm-Start**: Maintains a small replay buffer of successful episodes and runs supervised fine-tuning steps on top-performing trajectories after each PPO update. Provides the "offline→online bridge" that stabilizes pure online RL.
+**SFT Warm-Start**: Pre-trains the agent with demonstration data before RL begins, then optionally continues SFT on recent successful episodes during training. Provides an "offline→online bridge" that stabilizes pure online RL.
 
 **Target-KL Controller**: Enables TRL's built-in KL divergence monitoring and early stopping to prevent catastrophic policy drift.
 
