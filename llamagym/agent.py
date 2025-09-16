@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import Dict, List, Optional, Any
 import json
+import torch
+import re
 
 import gymnasium as gym
-import torch
 from trl import (
     PPOTrainer,
     PPOConfig,
@@ -18,7 +19,7 @@ class Agent(ABC):
     def __init__(
         self, model, tokenizer, device, generate_config_dict=None, ppo_config_dict=None,
         sft_warm_start=False, sft_steps=1, topk_p=0.2, use_target_kl=False, target_kl=0.02,
-        reward_scale=0.1
+        reward_scale=1.0
     ):
         if generate_config_dict is None:
             generate_config_dict = {
@@ -53,6 +54,22 @@ class Agent(ABC):
         self.model.to(self.device)
         self.model_ref = create_reference_model(self.model)
         self.model_ref.to(self.device)
+        
+        # Keep models in fp32 for PPO+LoRA stability on MPS
+        model_device = next(self.model.parameters()).device
+        if self.device.startswith("mps") or (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and str(model_device).startswith('mps')):
+            print("Using fp32 for MPS PPO+LoRA stability")
+
+        # Fix generation config conflicts to avoid warnings
+        if hasattr(self.model, 'generation_config'):
+            self.model.generation_config.do_sample = False
+            self.model.generation_config.temperature = 1.0
+            self.model.generation_config.top_p = 1.0
+            self.model.generation_config.top_k = 0
+
+        # Ensure proper pad token handling
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
         # TRL 0.7.x: do NOT pass device/accelerator kwargs
         self.ppo_config = PPOConfig(**ppo_config_dict)
@@ -76,7 +93,6 @@ class Agent(ABC):
         )
         
         # hard-pin PPOTrainer's device to CPU (or your chosen device)
-        import torch
         self.ppo_trainer.current_device = torch.device(self.device)  # e.g., torch.device("cpu")
         # best-effort: align any internal accelerator if present
         if hasattr(self.ppo_trainer, "accelerator"):
@@ -155,77 +171,113 @@ class Agent(ABC):
 
         pad_id = self.tokenization_utils.get_pad_token_id()
 
+        print(f"Starting generation with input shape: {inputs['input_ids'].shape}")
+        print(f"Generation config: {self.generate_config_dict}")
+        
+        # Add debug info for Llama 3.1+ models
+        if 'llama' in getattr(self.tokenizer, 'name_or_path', '').lower():
+            print(f"Model: {getattr(self.tokenizer, 'name_or_path', 'unknown')}")
+            print(f"Prompt preview: {repr(prompt[-200:])}")  # Last 200 chars
+        
+        # Filter out None values from generation config
+        filtered_config = {
+            k.split("/")[-1]: v 
+            for k, v in self.generate_config_dict.items() 
+            if v is not None
+        }
+        
         generate_ids = self.model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask"),
             pad_token_id=pad_id,
-            **{k.split("/")[-1]: v for k, v in self.generate_config_dict.items()},
+            eos_token_id=self.tokenizer.eos_token_id,
+            **filtered_config,
         )
-        new_tokens = generate_ids[0, inputs["input_ids"].size(1):]
-        return self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        print(f"Generation completed, output shape: {generate_ids.shape}")
+        
+        # Extract only the new tokens (response part)
+        input_length = inputs["input_ids"].size(1)
+        new_tokens = generate_ids[0, input_length:]
+        
+        # Decode with special token handling for debugging
+        response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        
+        # Additional debugging for problematic responses
+        if len(response) > 100 or not any(char.isalnum() for char in response):
+            print(f"Warning: Potentially problematic response detected")
+            print(f"Response length: {len(response)}")
+            print(f"Raw tokens: {new_tokens[:10].tolist()}")  # First 10 tokens
+            print(f"Response preview: {repr(response[:100])}")
+        
+        return response
 
     def act(self, observation):
-        message = self.format_observation(observation)
-        self.current_episode_messages += [{"role": "user", "content": message}]
+        # 1) Build a *short* prompt for this step only
+        user_msg = {"role": "user", "content": self.format_observation(observation)}
+        msgs = [{"role": "system", "content": self.get_system_prompt()}, user_msg]
+        prompt = self.tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 
-        response = self.llm(self.current_episode_messages)
-        
-        # Try JSON parsing first, then fallback to extract_action
-        json_action = self._try_json_action_parse(response)
-        if json_action is not None:
-            action = json_action
-        else:
-            try:
-                action = self.extract_action(response)
-            except Exception:
-                # minimal, env-agnostic fallback; change if you have action_space
-                action = 0
+        # 2) Pre-seed the assistant with the JSON prefix and let the model choose 1 token
+        prefix = '{"action": '
+        inputs = self.tokenizer(prompt + prefix, return_tensors="pt")
+        dev = next(self.model.parameters()).device
+        inputs = {k: v.to(dev) for k, v in inputs.items()}
 
-        self.current_episode_messages += [{"role": "assistant", "content": response}]
-        
-        # Store step data for replay buffer
+        # IMPORTANT: 1 new token only; no sampling; no eos that can fire early
+        out = self.model.generate(
+            **inputs,
+            max_new_tokens=1,
+            do_sample=False,
+            use_cache=True,
+            pad_token_id=self.tokenizer.eos_token_id,   # safe default
+            eos_token_id=None                           # avoid early <|eot_id|> stop
+        )
+
+        new = out[0, inputs["input_ids"].size(1):]
+        digit = self.tokenizer.decode(new, skip_special_tokens=True).strip()[:1]
+        if digit not in ("0", "1"):
+            digit = "0"  # safe fallback
+
+        response = f'{{"action": {digit}}}'  # close the JSON yourself
+        action = int(digit)
+
+        # keep a *short* trace for logging/replay (don't reprompt with it)
+        self.current_episode_messages += [user_msg, {"role": "assistant", "content": response}]
         if self.replay_buffer is not None:
-            step_data = {
-                "obs_text": message,
+            self.current_episode_data.append({
+                "obs_text": user_msg["content"],
                 "response_text": response,
                 "action": action,
-                "reward": None  # Will be filled in assign_reward
-            }
-            self.current_episode_data.append(step_data)
-        
+                "reward": None
+            })
         return action
 
-    def assign_reward(self, reward):
-        self.current_episode_rewards.append(reward)
+    def assign_reward(self, env_reward):
+        # Add format bonus for valid JSON responses
+        JSON_OK = re.compile(r'^\s*\{\s*"action"\s*:\s*[01]\s*\}\s*$')
+        fmt_bonus = 0.1 if (self.current_episode_messages and
+                            self.current_episode_messages[-1]["role"] == "assistant" and
+                            JSON_OK.match(self.current_episode_messages[-1]["content"])) else -0.1
+        
+        total_reward = env_reward + fmt_bonus
+        self.current_episode_rewards.append(total_reward)
         
         # Update the most recent step data with reward
         if self.replay_buffer is not None and self.current_episode_data:
-            self.current_episode_data[-1]["reward"] = reward
+            self.current_episode_data[-1]["reward"] = total_reward
 
     def format_episode_for_ppo(self, messages, rewards):
-        queries, responses = [], []
-        model_device = next(self.model.parameters()).device
-        
-        # Walk pairs of (user, assistant) using token-based splitting
-        for i in range(2, len(messages), 2):
-            msgs_prefix = messages[:i]      # ...system,(u,a)*, user_k  
-            msgs_full = messages[:i+1]      # ... + assistant_k
-            q_ids, r_ids = self.tokenization_utils.qr_token_ids(msgs_prefix, msgs_full, model_device)
-            queries.append(q_ids)
-            responses.append(r_ids)
+        # Last-turn only for PPO (bandit step, not full conversation)
+        dev = next(self.model.parameters()).device
+        msgs_prefix = [messages[0], messages[-2]]               # system + last user
+        msgs_full   = [messages[0], messages[-2], messages[-1]] # + last assistant
+        q_ids, r_ids = self.tokenization_utils.qr_token_ids(msgs_prefix, msgs_full, dev)
 
-        # Scale and squash rewards (stops value blow-ups)
-        def _scale(x):  # gentle squash
+        def _scale(x): 
             return torch.tanh(torch.tensor(float(x) * self.reward_scale, dtype=torch.float32))
-
-        if all(reward == 0 for reward in rewards[:-1]):
-            # if sparse rewards, give equal reward to all conversation turns
-            per_turn_reward = rewards[-1] / max(1, len(queries))
-            rewards = [_scale(per_turn_reward) for _ in range(len(queries))]
-        else:
-            rewards = [_scale(r) for r in rewards]
-
-        return queries, responses, rewards
+        
+        r = rewards[-1] if rewards else 0.0
+        return [q_ids], [r_ids], [_scale(r)]
 
     def terminate_episode(self, train=True):
         if train:

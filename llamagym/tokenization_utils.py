@@ -15,9 +15,46 @@ class TokenizationUtils:
         if self.tokenizer.pad_token_id is None and self.tokenizer.eos_token_id is not None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         
-        # Add chat template fallback for non-chat tokenizers
+        # Add enhanced chat template fallback for non-chat tokenizers
         if not getattr(self.tokenizer, "chat_template", None):
-            self.tokenizer.chat_template = (
+            # Use a more robust template that handles common instruction formats
+            self.tokenizer.chat_template = self._get_fallback_template()
+    
+    def _get_fallback_template(self) -> str:
+        """Get an appropriate fallback chat template."""
+        # Detect tokenizer family for better templates
+        tokenizer_name = getattr(self.tokenizer, 'name_or_path', '').lower()
+        
+        if 'llama' in tokenizer_name:
+            # Check if this is a Llama 3.1+ model or TinyLlama/older models
+            if '3.1' in tokenizer_name or '3.2' in tokenizer_name or 'llama-3' in tokenizer_name:
+                # Llama 3.1+ template with proper special tokens
+                return (
+                    "{% for message in messages %}"
+                    "{% if message['role'] == 'system' %}"
+                    "{{ '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+                    "{% elif message['role'] == 'user' %}"
+                    "{{ '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+                    "{% elif message['role'] == 'assistant' %}"
+                    "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] + '<|eot_id|>' }}"
+                    "{% endif %}"
+                    "{% endfor %}"
+                    "{% if add_generation_prompt %}"
+                    "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"
+                    "{% endif %}"
+                )
+            else:
+                # TinyLlama and older Llama models use simpler format
+                return (
+                    "{% for m in messages %}"
+                    "{% if m['role']=='system' %}<|system|>\n{{ m['content'] }}</s>\n"
+                    "{% elif m['role']=='user' %}<|user|>\n{{ m['content'] }}</s>\n"
+                    "{% elif m['role']=='assistant' %}<|assistant|>\n{{ m['content'] }}</s>\n{% endif %}"
+                    "{% endfor %}{% if add_generation_prompt %}<|assistant|>\n{% endif %}"
+                )
+        else:
+            # Generic template for other models
+            return (
                 "{% for m in messages %}"
                 "{% if m['role']=='system' %}System: {{ m['content'] }}\n"
                 "{% elif m['role']=='user' %}User: {{ m['content'] }}\n"
