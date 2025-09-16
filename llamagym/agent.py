@@ -44,17 +44,22 @@ class Agent(ABC):
 
         self.model = model
         self.tokenizer = tokenizer
-        self.device = device
+        self.device = str(device)
         self.generate_config_dict = generate_config_dict
-        
+
         # Initialize tokenization utilities
         self.tokenization_utils = TokenizationUtils(tokenizer)
 
-        # put BOTH policy and ref on SAME device
-        self.model.to(self.device)
+        # put BOTH policy and ref on SAME device, promoting to fp32 on MPS for stability
+        target_device = torch.device(self.device)
+        dtype_kwargs = {}
+        if target_device.type == "mps":
+            dtype_kwargs["dtype"] = torch.float32
+
+        self.model = self.model.to(device=target_device, **dtype_kwargs)
         self.model_ref = create_reference_model(self.model)
-        self.model_ref.to(self.device)
-        
+        self.model_ref = self.model_ref.to(device=target_device, **dtype_kwargs)
+
         # Keep models in fp32 for PPO+LoRA stability on MPS
         model_device = next(self.model.parameters()).device
         if self.device.startswith("mps") or (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and str(model_device).startswith('mps')):
