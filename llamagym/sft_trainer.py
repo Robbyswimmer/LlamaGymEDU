@@ -1,3 +1,4 @@
+import math
 import torch
 from typing import List, Dict, Optional
 from tqdm import tqdm
@@ -220,17 +221,20 @@ class SFTTrainer:
             import torch.nn.functional as F
             logits_f32 = logits.float()
 
-            # Pre-sanitization diagnostics
-            has_nan = torch.isnan(logits_f32).any().item()
-            max_abs = torch.max(torch.abs(logits_f32)).item()
+            # Detect NaNs/Infs before they can corrupt LoRA weights (especially on MPS)
+            finite_mask = torch.isfinite(logits_f32)
+            if not finite_mask.all().item():
+                sanitized_preview = torch.nan_to_num(logits_f32.detach(), nan=0.0, posinf=80.0, neginf=-80.0)
+                max_abs = torch.max(torch.abs(sanitized_preview)).item()
+                print(f"SFT Debug: non-finite logits detected (max|logit|={max_abs:.2f}); skipping step")
+                optimizer.zero_grad(set_to_none=True)
+                return None
 
             # Causal LM convention: predict token t+1 at position t
-            logits_shifted = logits_f32[:, :-1, :]
+            logits_sanitized = torch.nan_to_num(logits_f32, nan=0.0, posinf=80.0, neginf=-80.0)
+            logits_sanitized = torch.clamp(logits_sanitized, -80.0, 80.0)
+            logits_shifted = logits_sanitized[:, :-1, :]
             labels_shifted = labels[:, 1:]
-
-            # Sanitize logits to avoid NaN/Inf in softmax
-            logits_shifted = torch.nan_to_num(logits_shifted, nan=0.0, posinf=80.0, neginf=-80.0)
-            logits_shifted = torch.clamp(logits_shifted, -80.0, 80.0)
 
             labels_view = labels_shifted.reshape(-1)
             logits_view = logits_shifted.reshape(-1, logits_shifted.size(-1))
@@ -247,8 +251,9 @@ class SFTTrainer:
             if not torch.isfinite(loss):
                 # Print some diagnostic stats to help debugging
                 with torch.no_grad():
-                    max_logit = torch.max(torch.abs(logits)).item()
+                    max_logit = torch.max(torch.abs(logits_sanitized)).item()
                     print(f"SFT skip: non-finite loss (|logits| max={max_logit:.2f})")
+                optimizer.zero_grad(set_to_none=True)
                 return None
 
             loss.backward()
@@ -258,20 +263,28 @@ class SFTTrainer:
                 grad_norm = 0.0
                 nonzero_grads = 0
                 total_params = 0
+                bad_grad = False
+                first_bad_name = None
                 for n, p in self.model.named_parameters():
                     if p.requires_grad and p.grad is not None:
                         g = p.grad.detach()
-                        grad_norm += torch.norm(g).item()
+                        if not torch.isfinite(g).all():
+                            bad_grad = True
+                            if first_bad_name is None:
+                                first_bad_name = n
+                        grad_norm += torch.norm(g.float()).item()
                         if torch.any(g != 0):
                             nonzero_grads += 1
                         total_params += 1
                 if total_params > 0 and nonzero_grads == 0:
                     print("SFT Debug: zero grads on all trainable params")
-                elif total_params > 0 and not torch.isfinite(torch.tensor(grad_norm)):
-                    print("SFT Debug: non-finite grad norm")
-                # occasional log if nan logits were detected
-                if has_nan:
-                    print(f"SFT Debug: NaNs in logits pre-sanitize, max|logit|={max_abs:.2f}")
+                if bad_grad or (total_params > 0 and not math.isfinite(grad_norm)):
+                    if bad_grad and first_bad_name is not None:
+                        print(f"SFT Debug: non-finite gradient detected in {first_bad_name}; skipping step")
+                    else:
+                        print("SFT Debug: non-finite grad norm; skipping step")
+                    optimizer.zero_grad(set_to_none=True)
+                    return None
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             optimizer.step()
             return float(loss.detach().cpu())

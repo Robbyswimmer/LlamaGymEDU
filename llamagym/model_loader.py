@@ -220,6 +220,30 @@ def load_model_and_tokenizer(
         if model_kwargs.get("device_map") == "cpu" or device == "cpu" or device.startswith("mps"):
             model = model.to(device)
             print(f"Moved model to {device}")
+
+        # Promote weights to float32 on MPS for numerical stability during training.
+        if str(device).startswith("mps"):
+            try:
+                target_device = torch.device(device)
+            except (TypeError, ValueError):
+                target_device = torch.device("mps")
+
+            try:
+                model = model.to(device=target_device, dtype=torch.float32)
+                # Best-effort update of dtype metadata to avoid later autocast mishaps.
+                if hasattr(model, "config"):
+                    try:
+                        model.config.torch_dtype = torch.float32
+                    except Exception:
+                        pass
+                if hasattr(model, "pretrained_model") and hasattr(model.pretrained_model, "config"):
+                    try:
+                        model.pretrained_model.config.torch_dtype = torch.float32
+                    except Exception:
+                        pass
+                print("Converted model weights to float32 for MPS stability")
+            except Exception as fp32_err:
+                print(f"⚠️  Could not convert model to float32 on MPS: {fp32_err}")
         
         # Resize token embeddings if tokenizer was modified
         if hasattr(tokenizer, '_added_tokens') and tokenizer._added_tokens:
