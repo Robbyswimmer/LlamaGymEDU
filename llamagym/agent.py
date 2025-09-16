@@ -117,11 +117,13 @@ class Agent(ABC):
         self.replay_buffer = ReplayBuffer() if sft_warm_start else None
         
         # Initialize SFT trainer if warm start is enabled
+        self._online_sft_enabled = bool(sft_warm_start)
+
         self.sft_trainer = None
         if sft_warm_start and self.replay_buffer:
             self.sft_trainer = SFTTrainer(
                 model=self.model,
-                tokenizer=self.tokenizer, 
+                tokenizer=self.tokenizer,
                 ppo_trainer=self.ppo_trainer,
                 replay_buffer=self.replay_buffer,
                 sft_steps=sft_steps,
@@ -347,7 +349,11 @@ class Agent(ABC):
             if len(self.current_batch["queries"]) >= self.ppo_config.batch_size:
                 # 1) warm-start SFT first (optional / gated)
                 sft_stats = {}
-                if self.sft_trainer and len(self.replay_buffer) > 0:
+                if (
+                    self._online_sft_enabled
+                    and self.sft_trainer
+                    and len(self.replay_buffer) > 0
+                ):
                     sft_stats = self.sft_trainer.run_sft_warmstart(self.get_system_prompt) or {}
 
                 # 2) then PPO update (value head will re-fit to the new trunk)
@@ -397,6 +403,15 @@ class Agent(ABC):
             train_stats["target_kl"] = self.target_kl
         
         return train_stats
+
+    def disable_online_sft(self) -> None:
+        """Disable automatic SFT warm-starting during PPO updates."""
+        self._online_sft_enabled = False
+
+    def enable_online_sft(self) -> None:
+        """Re-enable automatic SFT warm-starting during PPO updates."""
+        if self.sft_trainer is not None:
+            self._online_sft_enabled = True
     
     def sft_from_jsonl(self, path: str, steps: int | None = None, **ingest_kwargs) -> int:
         """Warm-start SFT from an external JSONL of (obs, response) pairs.
