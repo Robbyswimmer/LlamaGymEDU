@@ -3,3 +3,6 @@ wandb/
 .env
 *.pyc
 dist/
+venv/
+__pycache__/
+test_*.py
