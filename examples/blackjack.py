@@ -68,8 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fine-tune a blackjack agent with a laptop-friendly model.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face model name to use")
     parser.add_argument("--device", default="auto", help="Device to run on (auto, cpu, cuda, mps)")
-    parser.add_argument("--episodes", type=int, default=30, help="Number of training episodes")
-    parser.add_argument("--batch-size", type=int, default=4, help="PPO batch size")
+    parser.add_argument("--episodes", type=int, default=1000, help="Number of training episodes")
+    parser.add_argument("--batch-size", type=int, default=10, help="PPO batch size")
     parser.add_argument("--load-in-8bit", action="store_true", help="Enable 8-bit loading when supported")
     parser.add_argument("--max-new-tokens", type=int, default=48, help="Max tokens to generate per step")
     parser.add_argument("--seed", type=int, default=1337, help="Random seed for reproducibility")
@@ -136,7 +136,7 @@ def main() -> None:
         use_target_kl=True,
     )
 
-    demo_path = Path("demo_blackjack.jsonl")
+    demo_path = Path("sft_data/demo_blackjack.jsonl")
     if demo_path.exists():
         agent.sft_from_jsonl(str(demo_path), steps=2, max_items=150)
     else:
