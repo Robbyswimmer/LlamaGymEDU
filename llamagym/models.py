@@ -182,7 +182,132 @@ class ModelRegistry:
             "microsoft/DialoGPT-medium": gpt2_base,
             "microsoft/DialoGPT-large": gpt2_base,
         })
-        
+
+        # Laptop-friendly compact models
+        tinyllama_config = ModelConfig(
+            name="tinyllama-1.1b-chat",
+            tokenizer_kwargs={
+                "add_special_tokens": True,
+                "padding_side": "left",
+                "trust_remote_code": False,
+            },
+            model_kwargs={
+                "torch_dtype": "auto",
+                "device_map": "auto",
+                "trust_remote_code": False,
+            },
+            generation_config={
+                "max_new_tokens": 64,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": True,
+            },
+            recommended_peft_config={
+                "r": 8,
+                "lora_alpha": 16,
+                "lora_dropout": 0.05,
+                "bias": "none",
+                "task_type": "CAUSAL_LM",
+                "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+            },
+            notes="TinyLlama 1.1B chat model—fits on CPU or Apple M-series laptops",
+        )
+
+        phi_small_config = ModelConfig(
+            name="phi-small",
+            tokenizer_kwargs={
+                "add_special_tokens": True,
+                "padding_side": "left",
+                "trust_remote_code": False,
+            },
+            model_kwargs={
+                "torch_dtype": "auto",
+                "device_map": "auto",
+                "trust_remote_code": False,
+            },
+            generation_config={
+                "max_new_tokens": 80,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": True,
+            },
+            recommended_peft_config={
+                "r": 8,
+                "lora_alpha": 16,
+                "lora_dropout": 0.05,
+                "bias": "none",
+                "task_type": "CAUSAL_LM",
+            },
+            notes="Microsoft Phi models tuned for laptop-scale experiments",
+        )
+
+        smollm_config = ModelConfig(
+            name="smollm-1.7b-instruct",
+            tokenizer_kwargs={
+                "add_special_tokens": True,
+                "padding_side": "left",
+                "trust_remote_code": False,
+            },
+            model_kwargs={
+                "torch_dtype": "auto",
+                "device_map": "auto",
+                "trust_remote_code": False,
+            },
+            generation_config={
+                "max_new_tokens": 96,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": True,
+            },
+            recommended_peft_config={
+                "r": 8,
+                "lora_alpha": 16,
+                "lora_dropout": 0.05,
+                "bias": "none",
+                "task_type": "CAUSAL_LM",
+            },
+            notes="SmolLM 1.7B instruct—portable baseline for CPU finetuning",
+        )
+
+        qwen_small_config = ModelConfig(
+            name="qwen2-1.5b-instruct",
+            tokenizer_kwargs={
+                "add_special_tokens": True,
+                "padding_side": "left",
+                "trust_remote_code": False,
+            },
+            model_kwargs={
+                "torch_dtype": "auto",
+                "device_map": "auto",
+                "trust_remote_code": False,
+            },
+            generation_config={
+                "max_new_tokens": 96,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": True,
+            },
+            recommended_peft_config={
+                "r": 8,
+                "lora_alpha": 16,
+                "lora_dropout": 0.05,
+                "bias": "none",
+                "task_type": "CAUSAL_LM",
+            },
+            notes="Qwen2 1.5B instruct—good balance between capability and memory",
+        )
+
+        self._exact_configs.update({
+            "TinyLlama/TinyLlama-1.1B-Chat-v1.0": tinyllama_config,
+            "TinyLlama/TinyLlama-1.1B": tinyllama_config,
+            "microsoft/phi-2": phi_small_config,
+            "microsoft/phi-1_5": phi_small_config,
+            "microsoft/phi-3-mini-4k-instruct": phi_small_config,
+            "microsoft/phi-3-mini-128k-instruct": phi_small_config,
+            "HuggingFaceTB/SmolLM-1.7B-Instruct": smollm_config,
+            "Qwen/Qwen2-1.5B-Instruct": qwen_small_config,
+        })
+
         # Mixtral Family
         mixtral_base = ModelConfig(
             name="mixtral-base",
@@ -218,6 +343,10 @@ class ModelRegistry:
         
         # Family-based patterns for fuzzy matching
         self._family_configs = {
+            "tinyllama": tinyllama_config,
+            "phi": phi_small_config,
+            "smollm": smollm_config,
+            "qwen2": qwen_small_config,
             "llama-3.1": llama31_base,
             "llama-3.2": llama32_base,
             "llama": llama31_base,  # Default to latest

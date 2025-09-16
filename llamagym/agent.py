@@ -82,8 +82,8 @@ class Agent(ABC):
             _major_minor = (0, 0)
         if _major_minor >= (0, 12):
             raise RuntimeError(
-                f"Detected TRL version {_trl_ver}. This code targets TRL 0.7.x. "
-                "Please install trl==0.7.9 (see pyproject.toml) or update the code to the new TRL API."
+                f"Detected TRL version {_trl_ver}. This code targets TRL releases <0.12 (tested with 0.9.6). "
+                "Please install trl<0.12 (see pyproject.toml) or update the code to the new TRL API."
             )
 
         # Initialize PPOTrainer (compatible with TRL 0.7.x API)

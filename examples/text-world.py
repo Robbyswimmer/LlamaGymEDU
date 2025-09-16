@@ -1,95 +1,130 @@
-import re
+import argparse
 import os
+import warnings
+from pathlib import Path
+
+warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+
 from tqdm import trange
 import wandb
-import textworld.gym
-from llamagym import Agent
+import torch
 
-from transformers import AutoTokenizer
-from peft import LoraConfig
-from trl import AutoModelForCausalLMWithValueHead
+try:
+    import textworld.gym
+    from textworld import EnvInfos
+except ImportError as exc:  # pragma: no cover - TextWorld is optional
+    raise SystemExit(
+        "TextWorld is not installed. Run `python scripts/bootstrap.py --extras textworld` "
+        "or `pip install llamagym[textworld]`."
+    ) from exc
+
+from llamagym import Agent, load_model_and_tokenizer
+
+DEFAULT_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+DEFAULT_GAME = Path("examples/tw_games/custom_game.z8")
 
 
 class TextworldAgent(Agent):
     def get_system_prompt(self) -> str:
-        return "You will be playing a text-based game. Here are some example commands: 'go west', 'inventory', 'drop teacup', 'examine broom', 'close type 2 box', 'open door', 'insert pencil into type 1 box', 'look'. Not all commands will work, but there are many others that you can try beyond these examples. When responding, first reason about the game state to decide the best action and then say 'command: <your command>'."
+        return (
+            "You will be playing a text-based game. Start by analysing the current room and inventory. "
+            "Reason about the next best action and respond as: command: <your command>."
+        )
 
     def format_observation(self, observation) -> str:
-        # remove the game header text
         observation = observation.split("$$$$$$$ \n\n")[-1].strip()
         return observation
 
     def extract_action(self, response: str):
+        import re
+
         command_match = re.search(r"(C|c)ommand: (.+?)(?=\n|$)", response)
-        command = command_match.group(2) if command_match else None
+        if command_match:
+            return command_match.group(2)
+        return "look"
 
-        return command
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fine-tune a TextWorld agent on laptop hardware.")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face model to use")
+    parser.add_argument("--device", default="auto", help="Device to run on (auto, cpu, cuda, mps)")
+    parser.add_argument("--episodes", type=int, default=50, help="Number of training episodes")
+    parser.add_argument("--batch-size", type=int, default=4, help="PPO batch size")
+    parser.add_argument("--load-in-8bit", action="store_true", help="Enable 8-bit loading when available")
+    parser.add_argument("--max-steps", type=int, default=50, help="Maximum steps per episode")
+    parser.add_argument("--game", type=Path, default=DEFAULT_GAME, help="Path to a TextWorld game file (.z8)")
+    parser.add_argument("--seed", type=int, default=7, help="Random seed")
+    parser.add_argument("--wandb-project", default=None, help="Override WANDB_PROJECT")
+    parser.add_argument("--wandb-mode", default=None, help="Override WANDB_MODE")
+    return parser.parse_args()
 
 
-if __name__ == "__main__":
+def init_wandb(config: dict, project_override: str | None, mode_override: str | None):
+    project = project_override or os.environ.get("WANDB_PROJECT")
+    mode = mode_override or os.environ.get("WANDB_MODE")
+    if mode is None:
+        mode = "disabled" if project is None else "online"
+    return wandb.init(project=project, config=config, mode=mode)
+
+
+def main() -> None:
+    args = parse_args()
+    torch.manual_seed(args.seed)
+
+    if not args.game.exists():
+        raise FileNotFoundError(
+            f"TextWorld game not found at {args.game}. Run from the repository root or provide --game."
+        )
+
     hyperparams = {
-        "model_name": "meta-llama/Llama-2-7b-chat-hf",
-        "lora/r": 16,
-        "lora/lora_alpha": 32,
-        "lora/lora_dropout": 0.05,
-        "lora/bias": "none",
-        "lora/task_type": "CAUSAL_LM",
-        "load_in_8bit": True,
-        "batch_size": 16,
-        "seed": 42069,
-        "episodes": 1000,
-        "generate/max_new_tokens": 32,
+        "model_name": args.model,
+        "env": "TextWorld",
+        "device": args.device,
+        "load_in_8bit": args.load_in_8bit,
+        "batch_size": args.batch_size,
+        "episodes": args.episodes,
+        "seed": args.seed,
+        "max_steps": args.max_steps,
+        "generate/max_new_tokens": 96,
         "generate/do_sample": True,
         "generate/top_p": 0.6,
-        "generate/top_k": 0,
         "generate/temperature": 0.9,
     }
-    wandb_run = wandb.init(project=os.environ.get("WANDB_PROJECT"), config=hyperparams)
-    device = "cuda:0"
-    HF_TOKEN = os.environ.get("HF_TOKEN")
 
-    lora_config = LoraConfig(
-        **{
-            key.split("/")[-1]: value
-            for key, value in hyperparams.items()
-            if key.startswith("lora/")
-        }
+    run = init_wandb(hyperparams, args.wandb_project, args.wandb_mode)
+
+    model, tokenizer, actual_device = load_model_and_tokenizer(
+        model_name=args.model,
+        device=args.device,
+        load_in_8bit=args.load_in_8bit,
     )
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        pretrained_model_name_or_path=hyperparams["model_name"],
-        peft_config=lora_config,
-        load_in_8bit=hyperparams["load_in_8bit"],
-        token=HF_TOKEN,
-    ).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(hyperparams["model_name"], token=HF_TOKEN)
-    tokenizer.add_special_tokens({"pad_token": "<pad>"})
-    model.pretrained_model.resize_token_embeddings(len(tokenizer))
 
     agent = TextworldAgent(
         model,
         tokenizer,
-        device,
-        {
-            key: value
+        actual_device,
+        generate_config_dict={
+            key.split("/")[-1]: value
             for key, value in hyperparams.items()
             if key.startswith("generate/")
         },
-        {
-            "batch_size": hyperparams["batch_size"],
-            "mini_batch_size": hyperparams["batch_size"],
+        ppo_config_dict={
+            "batch_size": args.batch_size,
+            "mini_batch_size": args.batch_size,
         },
+        sft_warm_start=False,
+        use_target_kl=True,
     )
 
     env_id = textworld.gym.register_game(
-        "examples/tw_games/custom_game.z8",
-        max_episode_steps=50,
-        request_infos=textworld.EnvInfos(
-            admissible_commands=True,
-        ),
+        str(args.game),
+        max_episode_steps=args.max_steps,
+        request_infos=EnvInfos(admissible_commands=True),
     )
     env = textworld.gym.make(env_id)
 
-    for episode in trange(hyperparams["episodes"]):
+    for episode in trange(args.episodes):
         observation, info = env.reset()
         env.render()
         done = False
@@ -105,10 +140,17 @@ if __name__ == "__main__":
             "episode": episode,
             "total_return": sum(agent.current_episode_rewards),
             "message_ct": len(agent.current_episode_messages),
-            "episode_messages": agent.current_episode_messages[-1],
         }
         train_stats = agent.terminate_episode()
-        episode_stats.update(train_stats)
+        for key, value in train_stats.items():
+            if isinstance(value, (int, float)):
+                episode_stats[key] = value
         wandb.log(episode_stats)
 
     env.close()
+    if run:
+        wandb.finish()
+
+
+if __name__ == "__main__":
+    main()
