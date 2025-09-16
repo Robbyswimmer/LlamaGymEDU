@@ -75,6 +75,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1337, help="Random seed for reproducibility")
     parser.add_argument("--wandb-project", default=None, help="Override the WANDB_PROJECT environment variable")
     parser.add_argument("--wandb-mode", default=None, help="Override WANDB_MODE (default: disabled if no project)")
+    parser.add_argument(
+        "--online-sft",
+        action="store_true",
+        help="Allow SFT warm-starting to continue during PPO updates",
+    )
     return parser.parse_args()
 
 
@@ -102,6 +107,7 @@ def main() -> None:
         "generate/do_sample": False,
         "generate/temperature": None,
         "generate/top_p": None,
+        "online_sft": args.online_sft,
     }
 
     run = init_wandb(hyperparams, args.wandb_project, args.wandb_mode)
@@ -135,6 +141,9 @@ def main() -> None:
         agent.sft_from_jsonl(str(demo_path), steps=2, max_items=150)
     else:
         print("⚠️  demo_blackjack.jsonl not found; skipping SFT warm-start")
+
+    if not args.online_sft:
+        agent.disable_online_sft()
 
     env = gym.make("Blackjack-v1", natural=False, sab=False)
 
