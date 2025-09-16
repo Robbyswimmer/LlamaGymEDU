@@ -106,10 +106,58 @@ class ReplayBuffer:
     
     def __len__(self) -> int:
         return len(self.episodes)
-    
+
     def clear(self) -> None:
         """Clear all episodes from buffer."""
         self.episodes.clear()
+
+    def summary(self) -> Dict[str, float]:
+        """Return aggregate statistics for monitoring replay health."""
+        episodes = [ep for ep in self.episodes if ep]
+        metrics: Dict[str, float] = {
+            "replay/episodes": float(len(episodes)),
+            "replay/steps": float(sum(len(ep) for ep in episodes)),
+        }
+
+        if not episodes:
+            metrics.update(
+                {
+                    "replay/return/mean": 0.0,
+                    "replay/return/max": 0.0,
+                    "replay/return/min": 0.0,
+                    "replay/return/std": 0.0,
+                    "replay/success_rate": 0.0,
+                    "replay/pair_count": 0.0,
+                    "replay/pair_unique": 0.0,
+                }
+            )
+            return metrics
+
+        returns = [float(ep[0].get("total_return", 0.0)) for ep in episodes]
+        mean_return = sum(returns) / len(returns)
+        metrics["replay/return/mean"] = mean_return
+        metrics["replay/return/max"] = max(returns)
+        metrics["replay/return/min"] = min(returns)
+        if len(returns) > 1:
+            variance = sum((r - mean_return) ** 2 for r in returns) / len(returns)
+            metrics["replay/return/std"] = variance ** 0.5
+        else:
+            metrics["replay/return/std"] = 0.0
+        metrics["replay/success_rate"] = sum(r > 0 for r in returns) / len(returns)
+
+        pair_count = 0
+        unique_pairs = set()
+        for ep in episodes:
+            for step in ep:
+                obs = step.get("obs_text")
+                resp = step.get("response_text")
+                if obs and resp:
+                    pair_count += 1
+                    unique_pairs.add((obs, resp))
+
+        metrics["replay/pair_count"] = float(pair_count)
+        metrics["replay/pair_unique"] = float(len(unique_pairs))
+        return metrics
     
     def ingest_pairs(self, pairs: Iterable[Tuple[str, str]], score: float = 1.0) -> None:
         """Insert (obs_text, response_text) pairs as 1-step episodes.

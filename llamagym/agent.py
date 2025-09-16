@@ -279,7 +279,40 @@ class Agent(ABC):
         r = rewards[-1] if rewards else 0.0
         return [q_ids], [r_ids], [_scale(r)]
 
+    def _compute_reward_stats(self, rewards) -> Dict[str, float]:
+        values = []
+        for reward in rewards:
+            if isinstance(reward, torch.Tensor):
+                reward = reward.detach()
+                if reward.numel() == 1:
+                    values.append(float(reward.item()))
+                else:
+                    values.extend(float(x) for x in reward.cpu().flatten().tolist())
+            else:
+                try:
+                    values.append(float(reward))
+                except (TypeError, ValueError):
+                    continue
+
+        if not values:
+            return {}
+
+        mean_val = sum(values) / len(values)
+        stats: Dict[str, float] = {
+            "rl/batch_reward/mean": mean_val,
+            "rl/batch_reward/min": min(values),
+            "rl/batch_reward/max": max(values),
+        }
+        if len(values) > 1:
+            variance = sum((v - mean_val) ** 2 for v in values) / len(values)
+            stats["rl/batch_reward/std"] = variance ** 0.5
+        else:
+            stats["rl/batch_reward/std"] = 0.0
+        return stats
+
     def terminate_episode(self, train=True):
+        episode_return = sum(self.current_episode_rewards)
+        episode_length = len(self.current_episode_rewards)
         if train:
             queries, responses, rewards = self.format_episode_for_ppo(
                 self.current_episode_messages, self.current_episode_rewards
@@ -311,16 +344,24 @@ class Agent(ABC):
                 sft_stats = {}
                 if self.sft_trainer and len(self.replay_buffer) > 0:
                     sft_stats = self.sft_trainer.run_sft_warmstart(self.get_system_prompt) or {}
-                
+
                 # 2) then PPO update (value head will re-fit to the new trunk)
+                reward_stats = self._compute_reward_stats(rewards)
                 train_stats = self.train_batch(
                     self.current_batch["queries"],
                     self.current_batch["responses"],
                     self.current_batch["rewards"],
                 )
-                
+
                 # Combine SFT and PPO stats
-                combined_stats = {**train_stats, **sft_stats}
+                combined_stats: Dict[str, float] = {}
+                combined_stats.update(train_stats)
+                combined_stats.update(sft_stats)
+                combined_stats.update(reward_stats)
+                combined_stats["rl/episode_return"] = float(episode_return)
+                combined_stats["rl/episode_length"] = float(episode_length)
+                if self.replay_buffer is not None:
+                    combined_stats.update(self.replay_buffer.summary())
                 return combined_stats
 
         return {}
